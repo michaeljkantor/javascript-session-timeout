@@ -1,0 +1,260 @@
+<html>
+  <head>
+      <title>Timeout Alert Experiment - State Machine Version</title>
+  </head>
+  <body style="margin:0;  border:3px solid #808080;">
+    <h1>Timeout Warning Experiment</h1>
+
+    <p>Logs user out after X seconds, with a warning Y seconds before logout.</p>
+    <p>Keypresses and mouse clicks reset the timer, so long as 60 seconds have been run off.</p>
+
+    <label>First Name<input name="first-name" /></label><br />
+    <label>Last Name<input name="last-name" /></label>
+<script>	
+( function() {
+
+  const idleDuration = 600;                 // seconds of idle time before logout
+  const warningDuration = 60;               // seconds before logout the warning displays
+  const includeMonitor = true;              // whether (Alt-Ctrl-m) will show a monitor for testing
+  const showWarningAction = undefined;
+  const hideWarningAction = undefined;
+
+  // Optional - set up custom actions to show or hide warning
+  // const showWarningAction = (secondsToGo) => { 
+  //   console.log(`Doing custom warning activity. ${secondsToGo} seconds left!`); 
+  // };
+  // const hideWarningAction =  () => { 
+  //   console.log('Hiding custom warning'); 
+  // };
+
+  stateMachine = {
+    name: 'timeoutMonitor',
+    currentState: undefined,
+    sessionEndTime: undefined,
+    idleDurationMs: idleDuration * 1000,   // log the user out after this much inactive time
+    warningDurationMs: warningDuration * 1000,  // display a warning this long before logout
+    resetThrottleMs: 20 * 1000,  // ping server on activity if it's been at least this long since last user action
+    includeMonitor: includeMonitor,
+    checkInterval: undefined,
+    showWarningAction: undefined, 
+    hideWarningAction: undefined, 
+
+    states: {
+      reset: 'reset',
+      clean: 'clean',
+      warning: 'warning',
+      terminated: 'terminated'
+    },
+  
+    init: function() {      
+      this.registerUserAction = this._throttledResetCount.bind(this);      
+      
+      this.setUpWarningAndLoggedOutActions();
+
+      // Show monitor, for testing
+      if (this.includeMonitor) {
+        this.constructMonitor();
+      }
+
+      // Reset timer on user activity
+      document.addEventListener('keydown', this.registerUserAction);
+      document.addEventListener('click', this.registerUserAction);
+
+      // Check every second for possible state changes based on clock
+      this.checkInterval = setInterval(this.checkAndUpdateState.bind(this), 1000);
+      this.setState(this.states.reset);
+    },
+
+    setUpWarningAndLoggedOutActions: function() {
+      if (showWarningAction && hideWarningAction)
+        {
+            console.log(`Setting up actions from input. this = ${this.name}`);
+            this.showWarningAction = showWarningAction;
+            this.hideWarningAction = hideWarningAction;
+        } 
+        else 
+        {
+          this.warningWrapper = document.createElement('div');
+          this.warningWrapper.innerHTML = `
+            <div id="warning-wrapper">
+              <div id="warning-overlay" style="position:absolute;width:300;height:140;  top:0;left:0;width:100%;height:100%;background-color:black;opacity:.5"></div>
+              <div style="position:absolute;top:50%;left:50%;">
+                <div style="border:3px solid red;background-color:yellow;width:300px;padding:2em;text-align:center;position:relative;margin-top:-50px; left:-50%;top:-50%;">
+                  <p id="warning-text" style="font-size:2em;"></p>
+                  <button id="stay-logged-in" type="button" style="margin:4px;">Stay logged in</button>
+                  <button id="log-out-now" type="button" style="margin:4px;">Log out now</button>
+                </div>
+              </div>
+            </div>`;
+          this.warningText = this.warningWrapper.querySelector('#warning-text');
+          this.warningWrapper.querySelector('#stay-logged-in').addEventListener('click', () => this.setState(this.states.reset));
+          this.warningWrapper.querySelector('#log-out-now').addEventListener('click', () => this.setState(this.states.terminated));
+          this.showWarningAction = (secondsToGo ) => { 
+            this.warningText.innerHTML = `<p>Your session will end in ${secondsToGo} seconds</p>`;
+            document.body.appendChild(this.warningWrapper);  
+          };
+          this.hideWarningAction = () => {this.warningWrapper.remove(); }
+      }
+
+      (this.loggedOut = document.createElement('div')).innerHTML = `
+        <div>
+          <div id="warning-overlay" style="position:absolute;top:0;left:0;width:100%;height:100%;background-color:black;opacity:.9"></div>
+          <div id="logged-out-wrapper" style="position:absolute;top:50%;left:50%;">
+            <div id="logged-out" style="border:3px solid black;background-color:purple;color:white;width:300px;padding:2em;text-align:center;position:relative;left:-50%;top:-50%;">
+              <p style="font-size:2em;">Your session has ended</p>
+            </div>
+          </div>
+        </div>`;
+    },
+
+    // registerUserAction is called from click and keydown handlers, so must be self-contained
+    registerUserAction: undefined, 
+    _throttledResetCount: function(evt) {
+      console.log(`Event occurred. ${evt.type }`);
+      let now = (new Date).getTime();
+      // Throttle pings. Default is one ping + reset per minute
+      if (now + this.idleDurationMs - this.resetThrottleMs > this.sessionEndTime 
+        && document.querySelectorAll('#warning-wrapper').length == 0  // only if warning is not showing
+      ) {      
+        this.setState(this.states.reset)
+      }
+    },
+
+    setState: function (state) {
+      if (this.currentState == this.states.terminated) return;
+      if (this.currentState !== state) {
+        console.log(`State transition: ${this.currentState} => ${state}`);
+      }
+      this.currentState = state;
+
+      switch (state) {
+        case this.states.reset: 
+          keepSessionAlive();
+          this.sessionEndTime = (new Date).getTime() + this.idleDurationMs - 5000; // client expires 5 seconds before server          
+          this.setState(this.states.clean);
+          break;
+
+        case this.states.clean:
+          this.setBannerVisibility(false, false);
+          break;
+
+        case this.states.warning: 
+          var now = (new Date).getTime(); 
+          var secondsToGo = Math.round((this.sessionEndTime - now) / 1000);          
+          this.setBannerVisibility(true, false, secondsToGo);
+          break;
+
+        case this.states.terminated: 
+        try {
+          new Audio('https://www.myinstants.com/media/sounds/8d82b5_pacman_dies_sound_effect.mp3').play();
+          } catch(e) 
+          { console.log(`Error playing sound: ${e}`); }
+          clearInterval(this.checkInterval);
+          this.setBannerVisibility(false, true);
+          document.removeEventListener('keydown', this.registerUserAction);
+          document.removeEventListener('click', this.registerUserAction);  
+          doLogout();        
+          break;
+        
+        default:
+          console.log(`Unrecognized state ${state}`); 
+      }
+    },
+
+    setBannerVisibility: function(showWarning, showLoggedOut, secondsToGo) {
+      if (showWarning) {
+          this.showWarningAction(secondsToGo);
+      }
+      if (!showWarning && document.querySelectorAll('#warning-wrapper').length > 0 )
+      {
+        this.hideWarningAction();
+      }
+      
+      if (showLoggedOut) {
+        document.body.appendChild(this.loggedOut);
+      } 
+    },
+
+    checkAndUpdateState : function() {
+      let now = (new Date).getTime() ;    
+      let secondsToGo = Math.ceil((this.sessionEndTime - now) / 1000);
+      if (document.body.querySelectorAll('#monitor').length > 0) {
+        document.querySelector('#counter').innerHTML = secondsToGo; 
+      }
+
+      if (now > this.sessionEndTime) 
+      {
+        this.setState(this.states.terminated);
+      }
+      else if (now + this.warningDurationMs > this.sessionEndTime) 
+      {
+        this.setState(this.states.warning);
+      }
+      else 
+      {
+        this.setState(this.states.clean);    
+      }    
+    },
+
+    constructMonitor: function() {
+      var html = '<div id="monitor" style="height:110px;width:100px;position:absolute;right:5px;top:5px;background-color:coral;border:2px solid black;text-align:center;">'
+      + '<span id="counter"></span><br />'
+      + '<label>Timeout <input id="monitor-timeout" style="width:50%;text-align:center;"/></label>'
+      + '<label>Warning <input id="monitor-warning" style="width:50%;text-align:center;"/></label>'
+      + '</div>';
+      (this.monitor = document.createElement('div')).innerHTML = html;      
+      
+      // Secret key combination Alt-Ctrl-m will show the monitor
+      document.addEventListener('keydown', (evt) => {
+        if(evt.ctrlKey && evt.altKey && (evt.key == 'm')) {
+          if (document.body.querySelectorAll('#monitor').length > 0) {
+            this.monitor.remove();
+          } else {
+            document.body.appendChild(this.monitor);
+          }
+        }
+      });
+
+      const mt = this.monitor.querySelector('#monitor-timeout');
+      mt.value = this.idleDurationMs / 1000;
+      mt.addEventListener('change', evt => {
+        var s = parseInt(evt.target.value);
+        if (!isNaN(s)) {
+          this.idleDurationMs = s * 1000;
+          this.resetThrottleMs = Math.min(60, Math.floor((s + 5)/3)) * 1000;
+          console.log(`Set idleDurationMs = ${this.idleDurationMs}, resetThrottleMs = ${this.resetThrottleMs}`);
+          this.setState(this.states.reset);
+        }
+      });
+
+      const mw = this.monitor.querySelector('#monitor-warning');
+      mw.value = this.warningDurationMs / 1000;
+      mw.addEventListener('change', evt => {
+        var s = parseInt(evt.target.value);
+        if (!isNaN(s)) {
+          this.warningDurationMs = s * 1000;
+          this.setState(this.states.reset);
+        }
+      });
+    }
+  }
+
+  // Whatever interaction with the webserver will extend the session
+  keepSessionAlive = function() {
+    console.log('Ping webserver to keep session alive');
+    // TODO
+  },
+
+  // Whatever interaction with the webserver will terminate the session
+  doLogout = function() {
+    console.log('Kill the webserver session');
+    // TODO
+  }
+      
+  window.addEventListener('DOMContentLoaded', stateMachine.init.bind(stateMachine));
+
+})();
+
+    </script>
+  </body>
+</html>   
